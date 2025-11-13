@@ -52,10 +52,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # Backend API service
+  # Backend API service (Go)
   backend:
     build:
-      context: ./backend
+      context: ./backend-go
       dockerfile: Dockerfile
     container_name: streak-backend
     environment:
@@ -67,11 +67,9 @@ services:
       JWT_SECRET: your-super-secret-jwt-key-change-in-production
       JWT_REFRESH_SECRET: your-super-secret-refresh-key-change-in-production
       RTMP_SERVER_URL: rtmp://streaming:1935/live
+      CORS_ORIGIN: http://localhost:3000
     ports:
       - "3001:3001"
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,7 +77,6 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    command: npm run dev
 
   # Media/Streaming server
   streaming:

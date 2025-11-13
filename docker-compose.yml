@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for user data and stream metadata
+  postgres:
+    image: postgres:15-alpine
+    container_name: streak-postgres
+    environment:
+      POSTGRES_DB: streak
+      POSTGRES_USER: streak_user
+      POSTGRES_PASSWORD: streak_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streak_user -d streak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and pub/sub
+  redis:
+    image: redis:7-alpine
+    container_name: streak-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB for chat history
+  mongodb:
+    image: mongo:7
+    container_name: streak-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: streak_admin
+      MONGO_INITDB_ROOT_PASSWORD: streak_password
+      MONGO_INITDB_DATABASE: streak_chat
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: streak-backend
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://streak_user:streak_password@postgres:5432/streak
+      REDIS_URL: redis://redis:6379
+      MONGODB_URL: mongodb://streak_admin:streak_password@mongodb:27017/streak_chat?authSource=admin
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      JWT_REFRESH_SECRET: your-super-secret-refresh-key-change-in-production
+      RTMP_SERVER_URL: rtmp://streaming:1935/live
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    command: npm run dev
+
+  # Media/Streaming server
+  streaming:
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile
+    container_name: streak-streaming
+    environment:
+      NODE_ENV: development
+      RTMP_PORT: 1935
+      HTTP_PORT: 8080
+      REDIS_URL: redis://redis:6379
+      API_URL: http://backend:3001
+    ports:
+      - "1935:1935"  # RTMP ingest
+      - "8080:8080"  # HLS delivery
+    volumes:
+      - ./streaming:/app
+      - /app/node_modules
+      - hls_data:/app/hls
+    depends_on:
+      - redis
+      - backend
+    command: npm run dev
+
+  # Frontend Next.js application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: streak-frontend
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_WS_URL: ws://localhost:3001
+      NEXT_PUBLIC_HLS_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    command: npm run dev
+
+  # Nginx reverse proxy and load balancer
+  nginx:
+    image: nginx:alpine
+    container_name: streak-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - hls_data:/usr/share/nginx/html/hls:ro
+    depends_on:
+      - frontend
+      - backend
+      - streaming
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongodb_data:
+  hls_data:
+
+networks:
+  default:
+    name: streak-network
